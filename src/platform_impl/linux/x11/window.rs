@@ -7,13 +7,13 @@ use std::sync::Arc;
 use libc;
 use parking_lot::Mutex;
 
-use {Icon, MouseCursor, WindowAttributes};
-use CreationError::{self, OsError};
+use window::{Icon, MouseCursor, WindowAttributes};
+use window::CreationError::{self, OsError};
 use dpi::{LogicalPosition, LogicalSize};
 use platform_impl::MonitorHandle as PlatformMonitorHandle;
 use platform_impl::PlatformSpecificWindowBuilderAttributes;
 use platform_impl::x11::MonitorHandle as X11MonitorHandle;
-use window::MonitorHandle as RootMonitorHandle;
+use monitor::MonitorHandle as RootMonitorHandle;
 
 use super::{ffi, util, ImeSender, XConnection, XError, WindowId, EventLoop};
 
@@ -69,8 +69,8 @@ pub struct UnownedWindow {
 }
 
 impl UnownedWindow {
-    pub fn new(
-        event_loop: &EventLoop,
+    pub fn new<T: 'static>(
+        event_loop: &EventLoop<T>,
         window_attrs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes,
     ) -> Result<UnownedWindow, CreationError> {
@@ -1210,4 +1210,15 @@ impl UnownedWindow {
 
     #[inline]
     pub fn id(&self) -> WindowId { WindowId(self.xwindow) }
+
+    pub fn request_redraw(&self) {
+        // #TODO
+    }
+
+}
+
+pub struct EventLoopWindowTarget<T> {
+    
+
+    _marker: ::std::marker::PhantomData<T>
 }

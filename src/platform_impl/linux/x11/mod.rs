@@ -12,6 +12,9 @@ pub mod util;
 pub use self::monitor::MonitorHandle;
 pub use self::window::UnownedWindow;
 pub use self::xdisplay::{XConnection, XNotSupported, XError};
+pub use self::window::EventLoopWindowTarget;
+
+use dpi::{LogicalPosition, LogicalSize};
 
 use std::{mem, ptr, slice};
 use std::cell::RefCell;
@@ -24,24 +27,28 @@ use std::sync::atomic::{self, AtomicBool};
 
 use libc::{self, setlocale, LC_CTYPE};
 
-use {
+use event::Event;
+use event::Event::*;
+use event;
+
+use event_loop::{
     ControlFlow,
-    CreationError,
-    DeviceEvent,
-    Event,
+    //CreationError,
+    //DeviceEvent,
+    //Event,
     EventLoopClosed,
-    KeyboardInput,
-    LogicalPosition,
-    LogicalSize,
-    WindowAttributes,
-    WindowEvent,
+    //KeyboardInput,
+    //LogicalPosition,
+    //LogicalSize,
+    //WindowAttributes,
+    //WindowEvent,
 };
-use events::ModifiersState;
+use event::ModifiersState;
 use platform_impl::PlatformSpecificWindowBuilderAttributes;
 use self::dnd::{Dnd, DndState};
 use self::ime::{ImeReceiver, ImeSender, ImeCreationError, Ime};
 
-pub struct EventLoop {
+pub struct EventLoop<T: 'static> {
     xconn: Arc<XConnection>,
     wm_delete_window: ffi::Atom,
     dnd: Dnd,
@@ -57,6 +64,8 @@ pub struct EventLoop {
     // A dummy, `InputOnly` window that we can use to receive wakeup events and interrupt blocking
     // `XNextEvent` calls.
     wakeup_dummy_window: ffi::Window,
+
+    _marker: ::std::marker::PhantomData<T>
 }
 
 #[derive(Clone)]
@@ -66,8 +75,8 @@ pub struct EventLoopProxy {
     wakeup_dummy_window: ffi::Window,
 }
 
-impl EventLoop {
-    pub fn new(xconn: Arc<XConnection>) -> EventLoop {
+impl<E: 'static> EventLoop<E> {
+    pub fn new(xconn: Arc<XConnection>) -> EventLoop<E> {
         let root = unsafe { (xconn.xlib.XDefaultRootWindow)(xconn.display) };
 
         let wm_delete_window = unsafe { xconn.get_atom_unchecked(b"WM_DELETE_WINDOW\0") };
@@ -186,7 +195,7 @@ impl EventLoop {
     }
 
     pub fn poll_events<F>(&mut self, mut callback: F)
-        where F: FnMut(Event)
+        where F: FnMut(Event<T>)
     {
         let mut xev = unsafe { mem::uninitialized() };
         loop {
@@ -205,7 +214,7 @@ impl EventLoop {
     }
 
     pub fn run_forever<F>(&mut self, mut callback: F)
-        where F: FnMut(Event) -> ControlFlow
+        where F: FnMut(Event<T>) -> ControlFlow
     {
         let mut xev = unsafe { mem::uninitialized() };
 
@@ -232,7 +241,7 @@ impl EventLoop {
     }
 
     fn process_event<F>(&mut self, xev: &mut ffi::XEvent, mut callback: F)
-        where F: FnMut(Event)
+        where F: FnMut(Event<T>)
     {
         // XFilterEvent tells us when an event has been discarded by the input method.
         // Specifically, this involves all of the KeyPress events in compose/pre-edit sequences,
@@ -259,7 +268,7 @@ impl EventLoop {
                 let window_id = mkwid(window);
 
                 if client_msg.data.get_long(0) as ffi::Atom == self.wm_delete_window {
-                    callback(Event::WindowEvent { window_id, event: WindowEvent::CloseRequested });
+                    callback(Event::WindowEvent { window_id, event: event::WindowEvent::CloseRequested });
                 } else if client_msg.message_type == self.dnd.atoms.enter {
                     let source_window = client_msg.data.get_long(0) as c_ulong;
                     let flags = client_msg.data.get_long(1);
@@ -395,9 +404,9 @@ impl EventLoop {
             ffi::ConfigureNotify => {
                 #[derive(Debug, Default)]
                 struct Events {
-                    resized: Option<WindowEvent>,
-                    moved: Option<WindowEvent>,
-                    dpi_changed: Option<WindowEvent>,
+                    resized: Option<event::WindowEvent>,
+                    moved: Option<event::WindowEvent>,
+                    dpi_changed: Option<event::WindowEvent>,
                 }
 
                 let xev: &ffi::XConfigureEvent = xev.as_ref();
@@ -586,7 +595,7 @@ impl EventLoop {
             }
 
             ffi::KeyPress | ffi::KeyRelease => {
-                use events::ElementState::{Pressed, Released};
+                use event::ElementState::{Pressed, Released};
 
                 // Note that in compose/pre-edit sequences, this will always be Released.
                 let state = if xev.get_type() == ffi::KeyPress {
@@ -631,7 +640,7 @@ impl EventLoop {
 
                     callback(Event::WindowEvent {
                         window_id,
-                        event: WindowEvent::KeyboardInput {
+                        event: event::WindowEvent::KeyboardInput {
                             device_id,
                             input: KeyboardInput {
                                 state,
@@ -667,11 +676,11 @@ impl EventLoop {
                     return;
                 }
 
-                use events::WindowEvent::{Focused, CursorEntered, MouseInput, CursorLeft, CursorMoved, MouseWheel, AxisMotion};
-                use events::ElementState::{Pressed, Released};
-                use events::MouseButton::{Left, Right, Middle, Other};
-                use events::MouseScrollDelta::LineDelta;
-                use events::{Touch, TouchPhase};
+                use event::WindowEvent::{Focused, CursorEntered, MouseInput, CursorLeft, CursorMoved, MouseWheel, AxisMotion};
+                use event::ElementState::{Pressed, Released};
+                use event::MouseButton::{Left, Right, Middle, Other};
+                use event::MouseScrollDelta::LineDelta;
+                use event::{Touch, TouchPhase};
 
                 match xev.evtype {
                     ffi::XI_ButtonPress | ffi::XI_ButtonRelease => {
@@ -1070,7 +1079,7 @@ impl EventLoop {
 
                         callback(Event::DeviceEvent {
                             device_id: mkdid(device_id),
-                            event: DeviceEvent::Key(KeyboardInput {
+                            event: event::DeviceEvent::Key(event::KeyboardInput {
                                 scancode,
                                 virtual_keycode,
                                 state,
@@ -1187,6 +1196,20 @@ impl EventLoop {
     fn window_exists(&self, window_id: ffi::Window) -> bool {
         self.with_window(window_id, |_| ()).is_some()
     }
+
+    pub fn run<F>(mut self, callback: F) -> !
+        where F: 'static + FnMut(::event::Event<T>, &RootELW<T>, &mut ControlFlow)
+    {
+        self.run_return(callback);
+        ::std::process::exit(0);
+    }
+
+    pub fn run_return<F>(&mut self, mut callback: F)
+        where F: FnMut(::event::Event<T>, &RootELW<T>, &mut ControlFlow)
+    {
+
+
+    }
 }
 
 impl EventLoopProxy {
@@ -1288,8 +1311,8 @@ impl Deref for Window {
 }
 
 impl Window {
-    pub fn new(
-        event_loop: &EventLoop,
+    pub fn new<'static: T>(
+        event_loop: &EventLoop<T>,
         attribs: WindowAttributes,
         pl_attribs: PlatformSpecificWindowBuilderAttributes
     ) -> Result<Self, CreationError> {
@@ -1348,8 +1371,8 @@ struct XExtension {
     first_error_id: c_int,
 }
 
-fn mkwid(w: ffi::Window) -> ::WindowId { ::WindowId(::platform::WindowId::X(WindowId(w))) }
-fn mkdid(w: c_int) -> ::DeviceId { ::DeviceId(::platform::DeviceId::X(DeviceId(w))) }
+fn mkwid(w: ffi::Window) -> ::WindowId { event::WindowId(::platform::WindowId::X(WindowId(w))) }
+fn mkdid(w: c_int) -> ::DeviceId { event::DeviceId(::platform::DeviceId::X(DeviceId(w))) }
 
 #[derive(Debug)]
 struct Device {
@@ -1374,7 +1397,7 @@ enum ScrollOrientation {
 }
 
 impl Device {
-    fn new(el: &EventLoop, info: &ffi::XIDeviceInfo) -> Self {
+    fn new<'static: T>(el: &EventLoop<T>, info: &ffi::XIDeviceInfo) -> Self {
         let name = unsafe { CStr::from_ptr(info.name).to_string_lossy() };
         let mut scroll_axes = Vec::new();
 
